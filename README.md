@@ -6,7 +6,8 @@ arrived to ICU following cardiac arrest?
 Google Slides Presentation:
 https://docs.google.com/presentation/d/1gctvhfEFkoFcWF98bCcXipT1avHXCYOPYnFNkcQIMz8/edit?usp=sharing
 
-
+Colab Link:
+https://colab.research.google.com/drive/1SezFWdHrSpmqjc1mkGUosxQ0G_0thVQC
 
 NYU Critical Care Team
 
