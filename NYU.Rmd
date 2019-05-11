@@ -1,0 +1,681 @@
+---
+title: "NYU"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Datathon Tutorial
+
+The aim of this tutorial is to get you familiarized with BigQuery to query/filter/aggregate/export data with R. If you are familiar with Python, we also recommend that you check out the [Python version of this tutorial](bigquery_colab.ipynb).
+
+## Prerequisites
+
+You will need to have a valid Google account to be able to log in to Google Cloud Platform. If you do not have one, you can create one at https://accounts.google.com. If you will be also accessing restricted datasets, you may need to notify datathon organizers to register your account for data access.
+
+## Setup
+
+First, you need to run some initialization code. You can run the following cell by either pressing "Ctrl+Shift+Enter", or selecting "Cell -> Run cell and select below" menu, or clicking the equivalent button in the tool bar.
+
+```{r}
+# Install the "big R query" package, if neccessary by uncommenting the following two lines:
+# install.packages('devtools')
+# devtools::install_github("rstats-db/bigrquery")
+library("bigrquery")
+# Install ggplot2, uncomment next line if this is the first time this section is run.
+# install.packages("ggplot2")
+library("ggplot2")
+# Re-install curl to avoid errors like:
+# Error in curl::curl_fetch_memory(url, handle = handle) :
+#   Error in the HTTP2 framing layer
+# Uncomment next line if this is the first time this section is run.
+# install.packages("curl")
+# Install missing dependency, uncomment next line if this is the first time this section is run.
+# install.packages("readr")
+# Shared project. If you do not have the shared datathon project, you may use your own GCP project.
+project_id <- "physionet-data"
+options(httr_oauth_cache=FALSE)
+# Wrapper for running BigQuery queries.
+run_query <- function(query){
+    data <- query_exec(query, project=project_id, use_legacy_sql = FALSE, max_pages = Inf)
+    return(data)
+}
+```
+
+## Analysis
+
+```{r}
+df <- run_query("
+WITH patients AS (
+  SELECT ad.SUBJECT_ID, ad.HADM_ID, ad.HOSPITAL_EXPIRE_FLAG, icd.ICD9_CODE FROM `mimiciii_clinical.admissions` AS ad
+  INNER JOIN `mimiciii_clinical.diagnoses_icd` AS icd
+  ON ad.SUBJECT_ID = icd.SUBJECT_ID
+  WHERE icd.ICD9_CODE = '4275' OR icd.ICD9_CODE = 'V1253'),
+arrested AS (
+  SELECT p.SUBJECT_ID, p.HADM_ID, p.HOSPITAL_EXPIRE_FLAG, icd.ICD9_CODE FROM patients AS p
+  LEFT JOIN `mimiciii_clinical.diagnoses_icd`  AS icd
+  ON p.SUBJECT_ID = icd.SUBJECT_ID)
+SELECT a.*, icd.SHORT_TITLE, icd.LONG_TITLE FROM arrested AS a
+LEFT JOIN `mimiciii_clinical.d_icd_diagnoses` AS icd
+ON a.ICD9_CODE = icd.ICD9_CODE")
+
+```
+
+```{r}
+str(df)
+```
+
+```{r}
+colnames(df)
+```
+
+```{r warnings=FALSE, message=FALSE}
+library(psych)
+describe.by(df)
+```
+
+The above information appears to be meaningles in regards to this particular type of analysis.
+
+```{r}
+paste0("Total number of patients with cardiac arrest ICD-9: ", nrow(df))
+```
+
+```{r}
+library(tidyverse)
+table(df$HOSPITAL_EXPIRE_FLAG)
+```
+
+* 20788 died while in the hospital.
+* 145828 survived to out of hospital.
+
+```{r}
+library(ggplot2)
+ggplot(df, aes(HOSPITAL_EXPIRE_FLAG)) + geom_bar(fill="lightblue") +
+  xlab("0: Survived to Hospital Discharge, 1: Died in Hospital") + ylab("")
+```
+
+How many unique types of ICD9s in this dataset?
+
+```{r}
+length(unique(df$ICD9_CODE))
+```
+
+There are 2340 unique ICD codes.
+
+How many different unique ICD codes exist for those who survived and those who did not?
+
+```{r}
+df %>% 
+  group_by(HOSPITAL_EXPIRE_FLAG) %>% 
+  summarise(ICD_Count = length(unique(ICD9_CODE)))
+```
+
+There is no obvious difference in count by the ICD_Count by those who survived and didn't survive.
+
+Listing some of the ICD_Codes by whether the patient expired or not expired. Listing only 20 out of few thousand.
+
+```{r}
+a <- df %>% group_by(HOSPITAL_EXPIRE_FLAG) %>% 
+  select(HOSPITAL_EXPIRE_FLAG, SHORT_TITLE)
+
+print("Survived in the hospital after cardiac arrest: ")
+a %>% filter(HOSPITAL_EXPIRE_FLAG == 0) %>% head(20)
+```
+
+```{r}
+print("Died in the hospital after cardiac arrest: ")
+a %>% filter(HOSPITAL_EXPIRE_FLAG == 1) %>% head(20)
+```
+
+The problem here is that all of these patients had a carest arrest. 
+
+There are too many different diagnoses, let us focus on some specific ICDs.
+
+--ICD 4019,4011,4010,40509,40519, HTN
+--ICD 5723 Portal HTN
+--ICD 4160 Pulmonary HTN
+--ICD V4581,4111,41181,4142,4144,41401 Coronary
+--ICD 24971,24961,24951,24981,24941,24991,24911,24960,24950,24990,24970,24920,24921,24910,24930,24931,24980,24940,24900,24901,25043, 25042 Diabetes
+--ICD 2722,2724 HLD
+--ICD 40391,40301 Renal disease
+--ICD 4928, 5182, 5181, 7702 COPD
+
+```{r}
+icd_codes <- c("4019", "4011", "4010", "40509", "40519","5723","4160","V4581", "4111", "41181", "4142", "4144", "41401", "24971", "24961", '24951','24981','24941','24991','24911','24960','24950','24990','24970','24920','24921','24910','24930','24931','24980','24940','24900','24901','25043','25042','2722','2724','40391','40301','4928','5182','5181','7702')
+
+b <- df %>% 
+  filter(ICD9_CODE %in% icd_codes) %>% 
+  group_by(HOSPITAL_EXPIRE_FLAG, SHORT_TITLE) %>% 
+  select(HOSPITAL_EXPIRE_FLAG, SHORT_TITLE)
+```
+
+```{r}
+print("Expired in the Hospital after Cardiac Arrest: ")
+c <- as.data.frame(table(b$HOSPITAL_EXPIRE_FLAG, b$SHORT_TITLE))
+c
+```
+
+How many are in each group with this filtered subset?
+
+```{r}
+b %>% group_by(HOSPITAL_EXPIRE_FLAG) %>% 
+  summarise(TotalPts = length(HOSPITAL_EXPIRE_FLAG))
+```
+
+```{r}
+c$mean <- ifelse(c$Var1 == 0, c$Freq/8248, c$Freq/1376)
+
+library(reshape2)
+ggplot(c, aes(x=Var2,y=mean,fill=factor(Var1))) +
+  geom_bar(stat="identity", position="dodge") +
+  scale_fill_discrete(name="Survival",
+                      breaks=c(0,1),
+                      labels=c("Survived", "Expired")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + xlab("ICD9") + ylab("Percent Frequency with ICD Present")
+```
+
+```{r}
+project_id <- "nyu-datathon"
+
+meds <- run_query("select  p.subject_id, p.hadm_id, rx.drug
+from Team7.prescriptions rx INNER JOIN Team7population.population_adm p
+on p.subject_id=rx.subject_id and p.hadm_id = rx.hadm_id where rx.drug in ('Albumin 25%',
+'Dobutamine Hcl',
+'Epinephrine-Sodium Chloride',
+'Hydrocortisone Acetate 10%  Foam',
+'Hydrocortisone Oint 0.5%',
+'Methylpre',
+'Phenylephrine  0.05% Nasal Spray',
+'Phenylephrine  0.5% Nasal Spray',
+'PrednisoLONE Acetate 0.12% Ophth. Susp.',
+'Prednisolone Acetate',
+'Propofol (Diprivan)',
+'Propofol Diprivan',
+'Sodium Bicarbonate 4.2% (2.4mEq)',
+'albumin',
+'sodium bicarbonate',
+'Albumin',
+'Albumin ',
+'Dexamethasone Ophthalmic Soln 0.1%',
+'Hydrocortisone Acetate Suppository',
+'Hydrocortisone Na Succ',
+'Hydrocortisone Oint 1%',
+'NEO*IV*Phenobarbital',
+'Neo-Synephrine',
+'Phenylephrine HCl 1%',
+'Albumin 5% (2.5gm)',
+'Hydrocortisone Cream 2.5%',
+'MEMAntine',
+'Magnesium Sulfate (Latex Free)',
+'sodium bica',
+'Ketamine Study Drug (*IND*)',
+'Prednisolone Acetate 1% Ophth. Susp.',
+'Hydrocortisone (Rectal) 2.5% Cream',
+'sodium bicar',
+'sodium bicarb',
+'Albumin, Human',
+'Hydrocortisone Cream 0.5%',
+'Dexamethasone Sod Phosphate',
+'Methylphenidate HCl',
+'Methylprednisolone',
+'Phenobarbital Sodium',
+'Epinephrine Inhalation',
+'Hydrocortisone Acetate Ointment 1%',
+'Dobutamine HCl',
+'Epinephrine 1:1000',
+'Hydrocortisone Cream 1%',
+'Hydrocortisone Na Succinate',
+'Methylene Blue 1%',
+'Hydrocortisone',
+'PENTObarbital Sodium',
+'PrednisoLONE Acetate 1% Ophth. Susp.',
+'Desmopressin Nasal',
+'Albumin 5%',
+'Magnesium Sulfate Replacement (Oncology)',
+'Methylprednisolone Sodium Succ',
+'Albumin 5% ',
+'Norepinephrine Bitartrate',
+'Epinephrine HCl',
+'Alteplase',
+'Midodrine HCl',
+'Hydrocortisone Study Drug (*IND*)',
+'Albumin 5% (12.5 g)',
+'Albumin 5% (12.5gm)',
+'Magnesium Citrate',
+'Dobutamine',
+'Albumin 5% (25 g)',
+'Albumin 25% (12.5gm)',
+'Albumin 25% (12.5 g)',
+'EPINEPHrine',
+'Dexmedetomidine HCl',
+'Fludrocortisone Acetate',
+'Methylprednisolone Na Succ',
+'Midodrine',
+'Dexmedetomidine',
+'DOBUTamine',
+'Calcium Chloride',
+'Nitroglycerin SL',
+'Nitroprusside Sodium',
+'Thiamine',
+'PHENYLEPHrine',
+'Methylprednisolone Na Succ.',
+'Albumin 5% (12.5g / 250mL)',
+'Dexamethasone',
+'MethylPREDNISolone Sodium Succ',
+'Propofol (Generic)',
+'Nesiritide',
+'DopAmine',
+'NORepinephrine',
+'DOPamine',
+'Albumin 5% (25g / 500mL)',
+'Prednisone',
+'PredniSONE',
+'Magnesium Oxide',
+'Albumin 25% (12.5g / 50mL)',
+'Lidocaine',
+'Epinephrine',
+'Hydrocortisone Na Succ.',
+'Milrinone',
+'Phenylephrine HCl',
+'Vasopressin',
+'Phenylephrine',
+'Nitroglycerin',
+'Norepinephrine',
+'Pantoprazole',
+'Sodium Bicarbonate',
+'Amiodarone HCl',
+'Propofol',
+'Amiodarone',
+'Heparin',
+'Calcium Gluconate',
+'Magnesium Sulfate',
+'SW')")
+```
+
+```{r}
+labs <- run_query("WITH items as (select 
+itemid, label, category 
+from Team7population.d_items_subset
+where itemid in (838    ,
+226110    ,
+225737    ,
+225722    ,
+8505    ,
+227547    ,
+227546    ,
+227543    ,
+8555    ,
+6702    ,
+6701    ,
+220227    ,
+223772    ,
+3447    ,
+226537    ,
+223762    ,
+225210    ,
+227239    ,
+220058    ,
+220056    ,
+225310    ,
+225309    ,
+225312    ,
+645    ,
+225698    ,
+224828    ,
+220235    ,
+220224    ,
+223830    ,
+8502    ,
+3312    ,
+3313    ,
+220621    ,
+226107    ,
+224291    ,
+227292    ,
+224289    ,
+225664    ,
+776    ,
+777    ,
+779    ,
+778    ,
+780    ,
+1529    ,
+224027    ,
+679    ,
+676    ,
+811    ,
+807    ,
+223761    ,
+224642    ,
+677    ,
+678    ,
+220051    ,
+220050    ,
+220052    ,
+456    ,
+8441    ,
+455    ,
+52    ,
+8368    ,
+51    ))
+
+SELECT 
+ch.subject_id
+, ch.hadm_id
+, ch.icustay_id
+, ch.itemid
+, ch.charttime
+, ch.value
+, ch.valueuom
+, ch.stopped
+,i.label
+,i.category
+from Team7.chartevents ch join items i on i.itemid = ch.itemid")
+```
+
+Head of the Medication dataset.
+
+```{r}
+head(meds)
+```
+
+How many different drugs are there in this list?
+Listed are 20 of the drugs.
+
+```{r}
+paste0("Number of unique drugs in the datsaet: ", length(unique(meds$drug)))
+head(unique(meds$drug,20))
+```
+
+Merge the HOSPITAL_EXPIRED_FLAG to the medication dataset.
+
+```{r}
+colnames(meds) <- c("SUBJECT_ID", "HADM_ID", "DRUG")
+df2 <- merge(df, meds, by=c("SUBJECT_ID","HADM_ID"))
+head(df2)
+```
+
+Can we visualize a difference between steroid use in in-hospital survival?
+
+```{r}
+d <- df2 %>% select(HOSPITAL_EXPIRE_FLAG, DRUG)
+head(d)
+```
+
+```{r}
+steroid_list <- c("Dexamethasone", "Prednisone", "Methylprednisolone Na Succ.", "Methylprednisolone Na Succ", "Fludrocortisone Acetate", "Hydrocortisone Na Succinate", "Methylprednisolone Sodium Succ", "Prednisolone Acetate", "Methylprednisolone","Dexamethasone Sod Phosphate")
+
+e <- d %>% filter(DRUG %in% steroid_list)
+e
+```
+
+```{r}
+dim(e)
+```
+
+26708 patients in this cohort.
+
+```{r}
+table(e$HOSPITAL_EXPIRE_FLAG)
+ggplot(e, aes(HOSPITAL_EXPIRE_FLAG)) + geom_bar(fill="lightblue") +
+  xlab("Whose who received steroids. 0: Survived in Hospital, 1: Expired in Hospital")
+```
+
+18284 patients died in the hospital compared to 8424 who survived.
+Did the intensivists use steroids in these patients as a hail mary effort?
+
+```{r}
+library(kableExtra)
+kable(as.data.frame(table(e$HOSPITAL_EXPIRE_FLAG, e$DRUG))) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Head of the Lab dataset:
+
+```{r}
+head(labs)
+```
+
+```{r}
+unique(labs$label)
+```
+
+Found out that `labs` database is too large to work with at the moment.
+
+Import in Demographics data in regards who died and survived to hospital discharge after cardiac arrest.
+
+```{r}
+df3 <- run_query("SELECT * FROM `Team7population.population_adm`")
+```
+
+```{r}
+colnames(df3)
+```
+
+```{r}
+library(corrplot)
+df4 <- df3[,!colnames(df3) %in% c("subject_id", "hadm_id")]
+
+library(fastDummies)
+dum <- dummy_cols(df4[,c("marital_status", "ethnicity", "gender", "language", "religion")])
+
+# Merging the dummy variables
+df4 <- df4[,!colnames(df4) %in% c("marital_status", "ethnicity", "gender", "language", "religion")]
+df4 <- cbind(df4, dum)
+df4 <- df4[,!colnames(df4) %in% c("marital_status", "ethnicity", "gender", "language", "religion")]
+head(df4)
+```
+
+```{r}
+marital_status <- df4[,colnames(df4) %in% c("died", "age","marital_status_MARRIED" , "marital_status_SINGLE", "marital_status_WIDOWED", "marital_status_DIVORCED", "marital_status_SEPARATE", "marital_status_LIFE PARTNER")]
+colnames(marital_status) <- c("Age", "Died", "Married", "Single", "Widowed", "Divorced", "Life Partner")
+M <- cor(marital_status)
+corrplot(M, order = "hclust")
+```
+
+```{r}
+# Gender
+gender <- df4[,colnames(df4) %in% c("died", "gender_M","gender_F")]
+colnames(gender) <- c("Died", "Male", "Female")
+M <- cor(gender)
+corrplot(M, order = "hclust")
+```
+
+```{r}
+# Religion
+religion <- df4[,colnames(df4) %in% c("died", "religion_HINDU","religion_OTHER",    "religion_HEBREW","religion_JEWISH",                                    
+"religion_MUSLIM",                                    
+"religion_BAPTIST",                                   
+"religion_BUDDHIST",                                  
+"religion_CATHOLIC",                                  
+"religion_EPISCOPALIAN",                              
+"religion_GREEK ORTHODOX",                            
+"religion_7TH DAY ADVENTIST",                         
+"religion_JEHOVAH'S WITNESS",                         
+"religion_PROTESTANT QUAKER",                         
+"religion_CHRISTIAN SCIENTIST",                       
+"religion_ROMANIAN EAST. ORTH",                       
+"religion_UNITARIAN-UNIVERSALIST"    )]
+colnames(religion) <- c("Died", "Hindu", "Other", "Hebrew", "Jewish", "Muslim", "Baptist", "Buddhist", "Catholic", "Episcopalian", "Greek Orthodox", "7th Day Adventist", "Jehovah's Witness", "Protestant Quaker", "Christian Scientist", "Romanian East. Orth", "Unitarian")
+M <- cor(religion)
+corrplot(M, order = "hclust")
+```
+
+```{r}
+# Language
+languages <- df4[,colnames(df4) %in% c("died"                                        
+,"language_ENGL"                                      
+,"language_HIND"                                      
+,"language_SPAN"                                      
+,"language_PTUN"                                      
+,"language_ITAL"                                      
+,"language_RUSS"                                      
+,"language_CANT"                                      
+,"language_PORT"                                      
+,"language_VIET"                                      
+,"language_PERS"                                      
+,"language_AMER"                                      
+,"language_SOMA"                                      
+,"language_*BUR"                                      
+,"language_KORE"                                      
+,"language_CAPE"                                      
+,"language_HAIT"                                      
+,"language_TAGA"                                      
+,"language_LAOT"                                      
+,"language_BENG"                                      
+,"language_GREE"                                      
+,"language_FREN"                                      
+,"language_MAND"                                      
+,"language_*FUL"                                      
+,"language_*ARM" )]
+
+languages$foreign_language <- ifelse(languages$language_ENGL == 0, 1, 0)
+languages <- languages[,colnames(languages) %in% c("died", "language_ENGL")]
+
+colnames(languages) <- c("Died", "English")
+M <- cor(languages)
+M
+corrplot(M, order = "hclust")
+```
+
+```{r}
+# Died on the Y axis and Languages on the X axis
+table(languages$Died, languages$English)
+# Chi-sq test
+chisq.test(languages$Died, languages$English, correct=FALSE)
+```
+
+```{r}
+table(languages$Died)
+```
+
+```{r}
+# Race
+race <- df4[,colnames(df4) %in% c("died", 
+                                    "ethnicity_WHITE"                                    
+, "ethnicity_BLACK/AFRICAN AMERICAN"                   
+, "ethnicity_ASIAN"                                    
+, "ethnicity_ASIAN - ASIAN INDIAN"                     
+, "ethnicity_HISPANIC OR LATINO"                       
+, "ethnicity_PORTUGUESE"                               
+, "ethnicity_WHITE - RUSSIAN"                          
+, "ethnicity_ASIAN - VIETNAMESE"                       
+, "ethnicity_ASIAN - CHINESE"                          
+, "ethnicity_MULTI RACE ETHNICITY"                     
+, "ethnicity_WHITE - BRAZILIAN"                        
+, "ethnicity_HISPANIC/LATINO - PUERTO RICAN"           
+, "ethnicity_BLACK/CAPE VERDEAN"                       
+, "ethnicity_HISPANIC/LATINO - GUATEMALAN"             
+, "ethnicity_HISPANIC/LATINO - DOMINICAN"              
+, "ethnicity_BLACK/AFRICAN"                            
+, "ethnicity_ASIAN - FILIPINO"                         
+, "ethnicity_BLACK/HAITIAN"                            
+, "ethnicity_NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER"
+, "ethnicity_WHITE - OTHER EUROPEAN"                   
+, "ethnicity_MIDDLE EASTERN"                           
+, "ethnicity_ASIAN - OTHER"                            
+, "ethnicity_ASIAN - JAPANESE"                         
+, "ethnicity_WHITE - EASTERN EUROPEAN"                 
+, "ethnicity_ASIAN - KOREAN"                           
+, "ethnicity_AMERICAN INDIAN/ALASKA NATIVE"   )]
+
+colnames(race) <- c("Died", "White", "Black", "Asian1", "Asian2", "Latino", "White2","White3", "Asian3", "Asian4", "Multi-Race", "Latino2", "Latino3", "Black2","Latino4", "Latino5", "Black3", "Asian4", "Black4","Asian5","White4","MiddleEastern","Asian5","Asian6","White5","Asian7","NativeAmerican")
+
+race$White <- ifelse(race$White == 1 | race$White2 == 1 | race$White3 == 1 | race$White4 == 1 | race$White5 == 1, 1, 0)
+race$Black <- ifelse(race$Black == 1 | race$Black2 == 1 | race$Black3 == 1 | race$Black4 == 1, 1, 0)
+race$Asian <- ifelse(race$Asian1 == 1 | race$Asian2 == 1 | race$Asian3 == 1 | race$Asian4 == 1 | race$Asian5 == 1 | race$Asian6 == 1 | race$Asian7, 1, 0)
+race$Latino <- ifelse(race$Latino == 1 | race$Latino2 == 1 | race$Latino3 == 1 | race$Latino4 == 1 | race$Latino5 == 1, 1, 0)
+
+# race$`Multi-Race`
+# race$MiddleEastern
+# race$NativeAmerican
+race <- race[,colnames(race) %in% c("Died", "White", "Black", "Asian", "Latino", "Multi-Race", "MiddleEastern", "NativeAmerican")]
+
+M <- cor(race)
+corrplot(M, order = "hclust")
+M
+```
+
+```{r}
+# Died on the Y axis and White Race on the X axis
+table(race$Died, race$White)
+# Chi-sq test
+chisq.test(race$Died, race$White, correct=FALSE)
+```
+
+```{r}
+# Died on the Y axis and Black Race on the X axis
+table(race$Died, race$Black)
+
+# Plot
+z <- as.data.frame(table(race$Died, race$Black))
+colnames(z) <- c("Died","Race","Freq")
+
+ggplot(z, aes(x=Race,y=Freq,fill=factor(Died))) +
+  geom_bar(stat="identity", position="dodge") +
+  scale_fill_discrete(name="Survival",
+                      breaks=c(0,1),
+                      labels=c("Survived", "Expired")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + xlab("Black") + ylab("")
+
+# Chi-sq test
+chisq.test(race$Died, race$Black, correct=FALSE)
+```
+
+```{r}
+# Died on the Y axis and Latino Race on the X axis
+table(race$Died, race$Latino)
+
+# Plotting
+z <- as.data.frame(table(race$Died, race$Black))
+colnames(z) <- c("Died","Race","Freq")
+
+ggplot(z, aes(x=Race,y=Freq,fill=factor(Died))) +
+  geom_bar(stat="identity", position="dodge") +
+  scale_fill_discrete(name="Survival",
+                      breaks=c(0,1),
+                      labels=c("Survived", "Expired")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + xlab("Black") + ylab("")
+
+# Chi-sq test
+chisq.test(race$Died, race$Latino, correct=FALSE)
+```
+
+```{r}
+# Died on the Y axis and Asian Race on the X axis
+table(race$Died, race$Asian)
+# Chi-sq test
+chisq.test(race$Died, race$Asian, correct=FALSE)
+```
+
+```{r}
+# Died on the Y axis and MiddleEastern Race on the X axis
+table(race$Died, race$MiddleEastern)
+# Chi-sq test
+chisq.test(race$Died, race$MiddleEastern, correct=FALSE)
+```
+
+```{r}
+# Died on the Y axis and NativeAmerican Race on the X axis
+table(race$Died, race$White)
+# Chi-sq test
+chisq.test(race$Died, race$NativeAmerican, correct=FALSE)
+```
+
+```{r}
+df_1 <- race
+RACE <- colnames(df_1)[2:7][max.col(!is.na(df_1[,2:7]))]
+races <- data.frame(DIED = df_1$Died, RACE = RACE)
+head(races)
+```
+
+```{r}
+kable(summary(races)) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+races %>% group_by(RACE)# %>% summarise(Total_Died = sum(DIED)) %>% kable() %>% 
+  #kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
